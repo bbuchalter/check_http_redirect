@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 #------------------------------------------------------------------------------
 # Nagios check_http_redirect
