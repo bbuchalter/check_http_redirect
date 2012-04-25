@@ -30,7 +30,7 @@ use Getopt::Std;
 use LWP::UserAgent;
 
 my $plugin_name = 'Nagios check_http_redirect';
-my $VERSION             = '2.00';
+my $VERSION             = '3.00';
 
 # getopt module config
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
@@ -41,19 +41,19 @@ use constant EXIT_WARNING       => 1;
 use constant EXIT_CRITICAL      => 2;
 use constant EXIT_UNKNOWN       => 3;
 
-
 # parse cmd opts
 my %opts;
-getopts('vU:R:t:c:v:', \%opts);
+getopts('vU:R:t:c:S:', \%opts);
 $opts{t} = 5 unless (defined $opts{t});
 $opts{c} = 10 unless (defined $opts{c});
-if (not (defined $opts{U} ) or not (defined $opts{R} )) {
+if (not (defined $opts{U} ) or not (defined $opts{R} ) or not (defined $opts{S})) {
         print "ERROR: INVALID USAGE\n";
         HELP_MESSAGE();
         exit EXIT_CRITICAL;
 }
 
-my $status = EXIT_OK;
+#ASSUME A CRITICAL EXIT
+my $status = EXIT_CRITICAL;
 
 my $ua = LWP::UserAgent->new;
 
@@ -62,6 +62,7 @@ $ua->protocols_allowed( [ 'http', 'https'] );
 $ua->parse_head(0);
 $ua->timeout($opts{t});
 $ua->max_redirect(int($opts{c}));
+$ua->ssl_opts(SSL_ca_path => '/etc/ssl/certs');
 
 my $response = $ua->get($opts{U});
 my $count_redirects = $response->redirects;
@@ -69,49 +70,43 @@ my $count_redirects = $response->redirects;
 if ( $response->is_redirect )
 {
   print "There were more redirects to follow than currently permitted ($opts{c}).";
-  $status = EXIT_UNKNOWN;
+  exit $status;
 }
-
-
-if ($response->is_error)
+else
 {
-    if ($response->base =~ $opts{U}) {
-        print "Could not find any redirects (HTTP status ", $response->status_line, ")";
-    }
-    else
-    {
-        print "It took $count_redirects redirect(s) to reach ", $response->base;
-        print " (HTTP status ", $response->status_line, ")";
-    }
-    $status = EXIT_CRITICAL;
+        if ($response->base =~ $opts{U}) {
+                print "ERROR: Expected to be redirected, but response from original URL $opts{U}\n";
+        }
+        elsif ($response->base =~ $opts{R})
+        {
+                print "It took $count_redirects redirect(s) to reach ", $response->base, "\n";
+
+                $status = EXIT_OK; #we've reached the correct destination
+
+
+                foreach my $my_redirect ($response->redirects){
+                        if ($my_redirect->code != $opts{S}) {
+                                $status = EXIT_CRITICAL;
+                                print "ERROR: Redirects did not return correct HTTP status\n";
+                        }
+                }
+
+
+        }
+        else
+        {
+                print "ERROR: Expected to be redirected to $opts{R} but was redirected to ", $response->base, "\n";
+        }
 }
 
-if ($response->is_success)
-{
-    if ($response->base =~ $opts{R})
-    {
-        print "It took $count_redirects redirect(s) to reach ", $response->base;
-        print " (HTTP status ", $response->status_line, ")";
-        $status = EXIT_OK;
-    }
-    else
-    {
-        print " ERROR, expected $opts{R}";
-        $status = EXIT_CRITICAL;
-    }
+print "[redirect chain: $opts{U} > ";
+foreach my $my_redirect ($response->redirects){
+print $my_redirect->header('Location'), " (", $my_redirect->code, ") > ";
 }
+print "done]\n";
 
-if ($opts{v})
-{
-    my @redirect_chain;
-    foreach my $my_redirect ($response->redirects){
-        push(@redirect_chain, $my_redirect->header("Location"));
-    }
-    print " [redirect chain: ", $opts{U}, " > ", join(" > ", @redirect_chain), "]";
-}
-print "\n";
+
 exit $status;
-
 
 
 sub HELP_MESSAGE 
@@ -119,21 +114,20 @@ sub HELP_MESSAGE
         print <<EOHELP
         Retrieve an http/s url and checks its header for a given redirects.
         If the redirect exists and equal to the redirect you entered then exits with OK, otherwise exits with CRITICAL (if not equal) or CRITICAL ( if doesn't exist)
-        
+
         --help      shows this message
         --version   shows version information
 
         -U          URL to retrieve (http or https)
         -R          URL that must be equal to Header Location Redirect URL
+        -S          The HTTP status code that is expected
         -t          Timeout in seconds to wait for the URL to load. If the page fails to load, 
                     $plugin_name will exit with UNKNOWN state (default 60)
         -c          Depth of redirects to follow (default 10)
-        -v          Print redirect chain
 
 EOHELP
 ;
 }
-
 
 sub VERSION_MESSAGE 
 {
